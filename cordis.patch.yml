@@ -1,0 +1,3 @@
+- insert:
+    - id: wechat-voice
+      name: dsh-tts-bridge-wechatagent-bridge
