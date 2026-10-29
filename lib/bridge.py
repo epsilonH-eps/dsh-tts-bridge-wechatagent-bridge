@@ -105,6 +105,7 @@ def record_bridge_speech(text: str, max_seconds: float) -> tuple[np.ndarray, flo
 
     thread = threading.Thread(target=trigger, daemon=True)
     started = time.time()
+    start_ms = int(started * 1000)
     thread.start()
 
     noise: list[float] = []
@@ -131,6 +132,17 @@ def record_bridge_speech(text: str, max_seconds: float) -> tuple[np.ndarray, flo
 
     if said.get("error"):
         raise RuntimeError("朗读桥没有接收这次朗读：" + str(said["error"]))
+    try:
+        state = http_json(base + "/state", timeout=3)
+        recent = [h for h in (state.get("history") or []) if int(h.get("at") or 0) >= start_ms - 500]
+        if recent and recent[0].get("ok") is False:
+            raise RuntimeError("朗读桥页面没有出声：" + str(recent[0].get("error") or "点了朗读但没出声"))
+        if not state.get("playing") and int(state.get("waiting") or 0) > 0 and not recent:
+            raise RuntimeError("朗读桥还没有接走这次朗读（扩展没在取件）")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
     if not chunks:
         raise RuntimeError("没有录到任何音频")
     audio = np.concatenate(chunks, axis=0)
@@ -147,6 +159,27 @@ def record_bridge_speech(text: str, max_seconds: float) -> tuple[np.ndarray, flo
     clip = mono[start:end]
     if len(clip) < RATE * 0.35:
         raise RuntimeError("录到的语音太短，可能是朗读桥还没开始念")
+    return clip, float(len(clip)) / RATE
+
+
+def edge_tts_speak(text: str, work: Path) -> tuple[np.ndarray, float]:
+    """朗读桥没出声时的兜底：用 edge-tts 生成同一段话的语音。"""
+    import asyncio
+    import edge_tts
+    import miniaudio
+
+    mp3 = work / "fallback.mp3"
+    asyncio.run(edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural").save(str(mp3)))
+    decoded = miniaudio.decode_file(
+        str(mp3),
+        output_format=miniaudio.SampleFormat.SIGNED16,
+        nchannels=1,
+        sample_rate=RATE,
+    )
+    pcm = np.frombuffer(decoded.samples.tobytes(), dtype=np.int16)
+    if pcm.size == 0:
+        raise RuntimeError("edge-tts 兜底生成失败")
+    clip = pcm.astype(np.float32) / 32768.0
     return clip, float(len(clip)) / RATE
 
 
@@ -285,7 +318,14 @@ def main() -> int:
     t0 = time.time()
     try:
         wxid, kind, target = resolve_wxid(root, args.chat)
-        clip, duration = record_bridge_speech(args.text, max(12.0, min(args.max_seconds, 60.0)))
+        source = "dsh-tts-bridge"
+        bridge_error = None
+        try:
+            clip, duration = record_bridge_speech(args.text, max(12.0, min(args.max_seconds, 60.0)))
+        except Exception as exc:  # noqa: BLE001
+            bridge_error = str(exc)
+            clip, duration = edge_tts_speak(args.text, work)
+            source = "edge-tts fallback"
         silk_path, duration_ms = encode_silk(clip, work, duration)
         silk = silk_path.read_bytes()
         if len(silk) > 4 * 1024 * 1024:
@@ -313,7 +353,7 @@ def main() -> int:
             time.sleep(0.4)
         result = {
             "ok": True,
-            "engine": engine,
+            "engine": source + " + " + engine,
             "chat": args.chat,
             "durationMs": duration_ms,
             "silkBytes": len(silk),
@@ -321,6 +361,8 @@ def main() -> int:
             "messageId": str(receipt.get("localId")) if receipt else None,
             "note": "已提交；confirmed=true 表示数据库已出现新的语音消息。",
         }
+        if bridge_error:
+            result["bridgeError"] = bridge_error
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except Exception as exc:  # noqa: BLE001

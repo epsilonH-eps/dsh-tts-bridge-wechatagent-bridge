@@ -2,3 +2,5 @@ frida==17.24.3
 numpy==2.5.4
 psutil==7.2.2
 SoundCard==0.4.6
+edge-tts==7.3.1
+miniaudio==1.71

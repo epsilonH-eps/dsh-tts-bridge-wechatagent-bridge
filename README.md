@@ -8,6 +8,7 @@
 
 - 朗读桥在 Edge / `chat.deepseek.com` 页面里念文字；
 - WASAPI loopback 录下系统正在播放的声音；
+- 如果朗读桥页面没出声，自动用 **edge-tts**（`zh-CN-XiaoxiaoNeural`）兜底，仍然发原生语音条；
 - 自动裁静音、转 24 kHz 单声道 PCM、编码成微信 SILK；
 - 优先调用改过的 WeChatAgent hook `/SendVoiceMsg`；原版 hook 没有该路由时自动退回 Frida `send_message`；
 - 发送后用 WeChatAgent reader 数据库确认新的 `localType=34` 语音消息；
@@ -21,6 +22,7 @@ WeChatAgent 微信会话
   → 朗读桥 /say
   → Edge chat.deepseek.com 朗读
   → WASAPI loopback 录音
+  → 没出声时：edge-tts 兜底
   → 裁剪 + 24k PCM + SILK
   → WeChatAgent hook /SendVoiceMsg   （可选）
      └─ 没有该路由时：Frida send_message
@@ -33,7 +35,7 @@ WeChatAgent 微信会话
 - Windows 10/11 x64
 - 匹配版微信 **4.1.10.27**（WeChatAgent 的 hook 版本锁）
 - 已安装并登录 DSH / WeChatAgent
-- Edge 里的 `https://chat.deepseek.com` 页面开着并登录（朗读桥真正出声的地方）
+- Edge 里的 `https://chat.deepseek.com` 页面开着并登录（优先用朗读桥的声音）；朗读桥不出声时 edge-tts 兜底，需要能访问 Microsoft 语音服务
 - Python 3.10+（推荐 3.12）
 - 可选：Visual Studio C++ Build Tools（只在你要自己编译 native hook 时需要）
 
@@ -203,7 +205,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\native\build-voice-hook.ps
 
 ## 安全与边界
 
-- 朗读桥必须真的出声；页面没开/没登录会返回“朗读桥页面没有出声”；
+- 优先用朗读桥；页面没开、没登录或点了朗读不出声时自动 edge-tts 兜底，两者都失败才报错；
+- edge-tts 兜底需要网络；声音是 `zh-CN-XiaoxiaoNeural`，不是 DeepSeek 网页端的声音；
 - 单条语音建议 1~200 字，工具层限制 500 字；
 - 依赖 Weixin.dll **4.1.10.27** 的偏移（`send_message`、语音 vtable、参数构造）；微信升级后需要重新核对；
 - Frida 会注入微信进程；只建议在本机使用；
